@@ -1,0 +1,607 @@
+﻿=== FILE: \src\main\java\memory\SharedMatrix.java ===
+package memory;
+
+public class SharedMatrix {
+
+    private volatile SharedVector[] vectors = {}; // underlying vectors
+
+    public SharedMatrix() {
+        // TODO: initialize empty matrix
+    }
+
+    public SharedMatrix(double[][] matrix) {
+        // TODO: construct matrix as row-major SharedVectors
+    }
+
+    public void loadRowMajor(double[][] matrix) {
+        // TODO: replace internal data with new row-major matrix
+    }
+
+    public void loadColumnMajor(double[][] matrix) {
+        // TODO: replace internal data with new column-major matrix
+    }
+
+    public double[][] readRowMajor() {
+        // TODO: return matrix contents as a row-major double[][]
+        return null;
+    }
+
+    public SharedVector get(int index) {
+        // TODO: return vector at index
+        return null;
+    }
+
+    public int length() {
+        // TODO: return number of stored vectors
+        return 0;
+    }
+
+    public VectorOrientation getOrientation() {
+        // TODO: return orientation
+        return null;
+    }
+
+    private void acquireAllVectorReadLocks(SharedVector[] vecs) {
+        // TODO: acquire read lock for each vector
+    }
+
+    private void releaseAllVectorReadLocks(SharedVector[] vecs) {
+        // TODO: release read locks
+    }
+
+    private void acquireAllVectorWriteLocks(SharedVector[] vecs) {
+        // TODO: acquire write lock for each vector
+    }
+
+    private void releaseAllVectorWriteLocks(SharedVector[] vecs) {
+        // TODO: release write locks
+    }
+}
+
+
+
+=== FILE: \src\main\java\memory\SharedVector.java ===
+package memory;
+
+import java.util.concurrent.locks.ReadWriteLock;
+public class SharedVector {
+
+    private double[] vector;
+    private VectorOrientation orientation;
+    private ReadWriteLock lock = new java.util.concurrent.locks.ReentrantReadWriteLock();
+
+    public SharedVector(double[] vector, VectorOrientation orientation) {
+        this.vector = vector;
+        this.orientation = orientation;
+    }
+
+    public double get(int index) {
+        lock.readLock().lock();
+        try{
+            if(index < 0)
+                throw new RuntimeException("Index not valid");
+            return vector[index];
+        }
+        finally{
+            lock.readLock().unlock();
+        }
+    }
+
+    public int length() {
+        // TODO: return vector length
+        return 0;
+    }
+
+    public VectorOrientation getOrientation() {
+        // TODO: return vector orientation
+        return null;
+    }
+
+    public void writeLock() {
+        // TODO: acquire write lock
+    }
+
+    public void writeUnlock() {
+        // TODO: release write lock
+    }
+
+    public void readLock() {
+        // TODO: acquire read lock
+    }
+
+    public void readUnlock() {
+        // TODO: release read lock
+    }
+
+    public void transpose() {
+        // TODO: transpose vector
+    }
+
+    public void add(SharedVector other) {
+        // TODO: add two vectors
+    }
+
+    public void negate() {
+        // TODO: negate vector
+    }
+
+    public double dot(SharedVector other) {
+        // TODO: compute dot product (row Â· column)
+        return 0;
+    }
+
+    public void vecMatMul(SharedMatrix matrix) {
+        // TODO: compute row-vector Ã— matrix
+    }
+}
+
+
+
+=== FILE: \src\main\java\memory\VectorOrientation.java ===
+package memory;
+/**
+ * SharedVectors and SharedMatrices are oriented in either row-major or column-major order.
+ * In a SharedVector, this determines whether the vector is treated as a row or a column.
+ * In a SharedMatrix, this determines whether the matrix is stored row-by-row or column-by-column.
+ */
+public enum VectorOrientation {
+    ROW_MAJOR,
+    COLUMN_MAJOR
+}
+
+
+
+=== FILE: \src\main\java\parser\ComputationNode.java ===
+package parser;
+
+import java.util.List;
+
+public class ComputationNode {
+
+    private ComputationNodeType nodeType;
+    private List<ComputationNode> children = null;
+    private double[][] matrix = null; // only used for MATRIX nodes
+
+    public ComputationNode(String operatorStr, List<ComputationNode> children) throws IllegalArgumentException {
+        this.nodeType = mapOperator(operatorStr);
+        this.children = children;
+    }
+
+    private ComputationNodeType mapOperator(String operatorStr) throws IllegalArgumentException {
+        switch (operatorStr) {
+            case "+":
+                return ComputationNodeType.ADD;
+            case "*":
+                return ComputationNodeType.MULTIPLY;
+            case "-":
+                return ComputationNodeType.NEGATE;
+            case "T":
+                return ComputationNodeType.TRANSPOSE;
+            default:
+                throw new IllegalArgumentException("Unknown operator: " + operatorStr);
+        }
+    }
+
+    public ComputationNode(ComputationNodeType nodeType, List<ComputationNode> children) {
+        this.nodeType = nodeType;
+        this.children = children;
+    }
+
+    public ComputationNode(double[][] matrix) {
+        this.nodeType = ComputationNodeType.MATRIX;
+        this.matrix = matrix;
+    }
+
+    public ComputationNodeType getNodeType() {
+        return nodeType;
+    }
+
+    public List<ComputationNode> getChildren() {
+        return children;
+    }
+
+    /**
+     * Recursively finds the first resolvable node in the tree.
+     * A resolvable node is defined as a node that is not of type MATRIX,
+     * with children that are all of type MATRIX.
+     */
+    public ComputationNode findResolvable() {
+        if (nodeType == ComputationNodeType.MATRIX) {
+            return null;
+        }
+        for (ComputationNode child : children) {
+            if (child.getNodeType() != ComputationNodeType.MATRIX) {
+                ComputationNode res = child.findResolvable();
+                if (res != null) {
+                    return res;
+                }
+            }
+        }
+        return this;
+    }
+
+    /**
+     * Restructures the tree to ensure that operations with more than two operands
+     * are nested in a left-associative manner.
+     * For example, A + B + C becomes (A + B) + C.
+     * Effectively, this converts n-ary operations (n > 2) into binary operations.
+     */
+    public void associativeNesting() {
+        if (children != null && children.size() > 2) {
+            ComputationNode lastChild = children.remove(children.size() - 1);
+            ComputationNode newNode = new ComputationNode(nodeType, children);
+            children = List.of(newNode, lastChild);
+            newNode.associativeNesting();
+        }
+    }
+
+    /**
+     * Resolves this node by setting its type to MATRIX and storing the computed matrix.
+     */
+    public void resolve(double[][] matrix) {
+        this.nodeType = ComputationNodeType.MATRIX;
+        this.children = null;
+        this.matrix = matrix;
+    }
+
+    public double[][] getMatrix() {
+        if (matrix == null) {
+            throw new IllegalStateException("This node does not contain a matrix.");
+        }
+        return matrix;
+    }
+
+
+}
+
+
+
+=== FILE: \src\main\java\parser\ComputationNodeType.java ===
+package parser;
+
+/**
+ * Computation nodes hold either an operation to be applied, or a matrix (2D array).
+ * Matrices are always leaf nodes, while operation nodes have children.
+ */
+public enum ComputationNodeType {
+    ADD,
+    MULTIPLY,
+    NEGATE,
+    TRANSPOSE,
+    MATRIX,
+}
+
+
+
+=== FILE: \src\main\java\parser\InputParser.java ===
+package parser;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+
+import java.io.File;
+import java.io.IOException;
+import java.text.ParseException;
+import java.util.*;
+
+public class InputParser {
+
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public ComputationNode parse(String inputPath) throws ParseException {
+        try {
+            File inputFile = new File(inputPath);
+            JsonNode rootJsonNode = mapper.readTree(inputFile);
+            ComputationNode root = parseJsonNode(rootJsonNode);
+            return root;
+        } catch (IOException e) {
+            throw new ParseException("Failed to read the input JSON file: " + e.getMessage(), 0);
+        }
+    }
+
+    private ComputationNode parseJsonNode(JsonNode jsonNode) throws ParseException {
+        if (jsonNode.has("operator") && jsonNode.has("operands")) {
+            String operatorStr = jsonNode.get("operator").asText();
+            ArrayNode operandJsonNodes = (ArrayNode) jsonNode.get("operands");
+            List<ComputationNode> operands = new ArrayList<>();
+            for (int i = 0; i < operandJsonNodes.size(); i++) {
+                operands.add(parseJsonNode(operandJsonNodes.get(i)));
+            }
+            return new ComputationNode(operatorStr, operands);
+        }
+        else if (jsonNode.isArray()) {
+            if (jsonNode.size() == 0) {
+                throw new ParseException("Empty array cannot be parsed as DataNode.", 0);
+            }
+            // Check if it's a vector (1D array)
+            if (jsonNode.get(0).isNumber()) {
+                throw new ParseException("Vectors (1D arrays) are not supported as standalone nodes.", 0);
+            }
+            // Otherwise, it's a matrix (2D array)
+            else {
+                double[][] matrix = new double[jsonNode.size()][];
+                int width = jsonNode.get(0).size();
+                for (int i = 0; i < jsonNode.size(); i++) {
+                    JsonNode rowJsonNode = jsonNode.get(i);
+                    if (rowJsonNode.size() != width) {
+                        throw new ParseException("Inconsistent row sizes in matrix.", 0);
+                    }
+                    if (!rowJsonNode.isArray()) {
+                        throw new ParseException("Invalid matrix row: " + rowJsonNode.toString(), 0);
+                    }
+                    matrix[i] = new double[rowJsonNode.size()];
+                    for (int j = 0; j < rowJsonNode.size(); j++) {
+                        matrix[i][j] = rowJsonNode.get(j).asDouble();
+                    }
+                }
+                return new ComputationNode(matrix);
+            }
+        }
+        else { throw new ParseException("Invalid node structure: " + jsonNode.toString(), 0); }
+    }
+
+}
+
+
+
+=== FILE: \src\main\java\parser\OutputWriter.java ===
+package parser;
+
+import java.io.File;
+import java.io.IOException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+
+public class OutputWriter {
+
+    private static final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+
+    public static class ResultMatrix {
+        public double[][] result;
+        public ResultMatrix(double[][] result) { this.result = result; }
+    }
+
+    public static class ErrorMessage {
+        public String error;
+        public ErrorMessage(String error) { this.error = error; }
+    }
+
+    public OutputWriter() {}
+
+    public static void write(double[][] matrix, String filePath) throws IOException {
+        File file = new File(filePath);
+        mapper.writerWithDefaultPrettyPrinter().writeValue(file, new ResultMatrix(matrix));
+    }
+
+    public static void write(String error, String filePath) throws IOException {
+        File file = new File(filePath);
+        mapper.writerWithDefaultPrettyPrinter().writeValue(file, new ErrorMessage(error));
+    }
+
+}
+
+
+
+=== FILE: \src\main\java\scheduling\TiredExecutor.java ===
+package scheduling;
+
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class TiredExecutor {
+
+    private final TiredThread[] workers;
+    private final PriorityBlockingQueue<TiredThread> idleMinHeap = new PriorityBlockingQueue<>();
+    private final AtomicInteger inFlight = new AtomicInteger(0);
+
+    public TiredExecutor(int numThreads) {
+        // TODO
+        workers = null; // placeholder
+    }
+
+    public void submit(Runnable task) {
+        // TODO
+    }
+
+    public void submitAll(Iterable<Runnable> tasks) {
+        // TODO: submit tasks one by one and wait until all finish
+    }
+
+    public void shutdown() throws InterruptedException {
+        // TODO
+    }
+
+    public synchronized String getWorkerReport() {
+        // TODO: return readable statistics for each worker
+        return null;
+    }
+}
+
+
+
+=== FILE: \src\main\java\scheduling\TiredThread.java ===
+package scheduling;
+
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class TiredThread extends Thread implements Comparable<TiredThread> {
+
+    private static final Runnable POISON_PILL = () -> {}; // Special task to signal shutdown
+
+    private final int id; // Worker index assigned by the executor
+    private final double fatigueFactor; // Multiplier for fatigue calculation
+
+    private final AtomicBoolean alive = new AtomicBoolean(true); // Indicates if the worker should keep running
+
+    // Single-slot handoff queue; executor will put tasks here
+    private final BlockingQueue<Runnable> handoff = new ArrayBlockingQueue<>(1);
+
+    private final AtomicBoolean busy = new AtomicBoolean(false); // Indicates if the worker is currently executing a task
+
+    private final AtomicLong timeUsed = new AtomicLong(0); // Total time spent executing tasks
+    private final AtomicLong timeIdle = new AtomicLong(0); // Total time spent idle
+    private final AtomicLong idleStartTime = new AtomicLong(0); // Timestamp when the worker became idle
+
+    public TiredThread(int id, double fatigueFactor) {
+        this.id = id;
+        this.fatigueFactor = fatigueFactor;
+        this.idleStartTime.set(System.nanoTime());
+        setName(String.format("FF=%.2f", fatigueFactor));
+    }
+
+    public int getWorkerId() {
+        return id;
+    }
+
+    public double getFatigue() {
+        return fatigueFactor * timeUsed.get();
+    }
+
+    public boolean isBusy() {
+        return busy.get();
+    }
+
+    public long getTimeUsed() {
+        return timeUsed.get();
+    }
+
+    public long getTimeIdle() {
+        return timeIdle.get();
+    }
+
+    /**
+     * Assign a task to this worker.
+     * This method is non-blocking: if the worker is not ready to accept a task,
+     * it throws IllegalStateException.
+     */
+    public void newTask(Runnable task) {
+       // TODO
+    }
+
+    /**
+     * Request this worker to stop after finishing current task.
+     * Inserts a poison pill so the worker wakes up and exits.
+     */
+    public void shutdown() {
+       // TODO
+    }
+
+    @Override
+    public void run() {
+       // TODO
+    }
+
+    @Override
+    public int compareTo(TiredThread o) {
+        // TODO
+        return 0;
+    }
+}
+
+
+
+=== FILE: \src\main\java\spl\lae\LinearAlgebraEngine.java ===
+package spl.lae;
+
+import parser.*;
+import memory.*;
+import scheduling.*;
+
+import java.util.List;
+
+public class LinearAlgebraEngine {
+
+    private SharedMatrix leftMatrix = new SharedMatrix();
+    private SharedMatrix rightMatrix = new SharedMatrix();
+    private TiredExecutor executor;
+
+    public LinearAlgebraEngine(int numThreads) {
+        // TODO: create executor with given thread count
+    }
+
+    public ComputationNode run(ComputationNode computationRoot) {
+        // TODO: resolve computation tree step by step until final matrix is produced
+        return null;
+    }
+
+    public void loadAndCompute(ComputationNode node) {
+        // TODO: load operand matrices
+        // TODO: create compute tasks & submit tasks to executor
+    }
+
+    public List<Runnable> createAddTasks() {
+        // TODO: return tasks that perform row-wise addition
+        return null;
+    }
+
+    public List<Runnable> createMultiplyTasks() {
+        // TODO: return tasks that perform row Ã— matrix multiplication
+        return null;
+    }
+
+    public List<Runnable> createNegateTasks() {
+        // TODO: return tasks that negate rows
+        return null;
+    }
+
+    public List<Runnable> createTransposeTasks() {
+        // TODO: return tasks that transpose rows
+        return null;
+    }
+
+    public String getWorkerReport() {
+        // TODO: return summary of worker activity
+        return null;
+    }
+}
+
+
+
+=== FILE: \src\main\java\spl\lae\Main.java ===
+package spl.lae;
+import java.io.IOException;
+
+import parser.*;
+
+public class Main {
+    public static void main(String[] args) throws IOException {
+      // TODO: main
+    }
+}
+
+
+
+=== FILE: \pom.xml ===
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>org.example</groupId>
+    <artifactId>SPLA2</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <dependencies>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+    </dependencies>
+
+    <properties>
+        <maven.compiler.source>15</maven.compiler.source>
+        <maven.compiler.target>15</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+</project>
+
+
+
