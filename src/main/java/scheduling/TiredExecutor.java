@@ -36,7 +36,7 @@ public class TiredExecutor {
                     idleMinHeap.add(worker);
                 }
               };
-              worker.newTask(task);
+              worker.newTask(wrappedTask);
         }catch(InterruptedException e){
             Thread.currentThread().interrupt();
         }
