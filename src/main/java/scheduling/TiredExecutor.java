@@ -21,9 +21,6 @@ public class TiredExecutor {
     }
 
     public void submit(Runnable task) {
-        if(idleMinHeap.isEmpty())
-            throw new IllegalStateException();
-
         try{
             inFlight.incrementAndGet();
             TiredThread worker = idleMinHeap.take();
