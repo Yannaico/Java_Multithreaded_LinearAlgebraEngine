@@ -12,24 +12,49 @@ public class TiredExecutor {
     private final AtomicInteger inFlight = new AtomicInteger(0);
 
     public TiredExecutor(int numThreads) {
-        // TODO
-        workers = null; // placeholder
+        this.workers = new TiredThread[numThreads];
+        for(int i=0;i<numThreads;i++){
+            workers[i] = new TiredThread(i, 0.5 + Math.random());
+            workers[i].start();
+            idleMinHeap.add(workers[i]);
+        }
     }
 
     public void submit(Runnable task) {
-        // TODO
+        if(idleMinHeap.isEmpty())
+            throw new IllegalStateException();
+
+        try{
+            inFlight.incrementAndGet();
+            TiredThread worker = idleMinHeap.take();
+            
+              Runnable wrappedTask = () -> {
+                try{
+                    task.run();
+                }finally{
+                    inFlight.decrementAndGet();
+                    idleMinHeap.add(worker);
+                }
+              };
+              worker.newTask(task);
+        }catch(InterruptedException e){
+            Thread.currentThread().interrupt();
+        }
     }
 
     public void submitAll(Iterable<Runnable> tasks) {
-        // TODO: submit tasks one by one and wait until all finish
+        for(Runnable task : tasks){
+            submit(task);
+        }
     }
 
     public void shutdown() throws InterruptedException {
-        // TODO
+        for(int i=0;i<workers.length;i++){
+            workers[i].shutdown();
+        }
     }
 
     public synchronized String getWorkerReport() {
-        // TODO: return readable statistics for each worker
-        return null;
+        
     }
 }
