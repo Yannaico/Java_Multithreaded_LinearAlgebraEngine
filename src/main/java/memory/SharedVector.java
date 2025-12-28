@@ -57,6 +57,9 @@ public class SharedVector {
 }
     //Assumes caller holds write lock on this and read lock on other.
     public void add(SharedVector other) {
+        if(other == null){
+            throw new IllegalArgumentException("Other vector is null");
+        }
         if (this.orientation != other.getOrientation()) {
             throw new IllegalArgumentException("Cannot add vectors with different orientations");
         }

@@ -80,7 +80,7 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
             Thread.currentThread().interrupt();
         }
         
-        }
+    }
 
         @Override
         public void run() {
