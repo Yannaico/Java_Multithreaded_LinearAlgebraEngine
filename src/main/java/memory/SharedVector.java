@@ -101,9 +101,9 @@ public class SharedVector {
 
     public void vecMatMul(SharedMatrix matrix) {
         /*
-        [x y z]    [a b c] [a]
-        [a b c]            [b]
-        [d e f]            [c]
+        [x y z]    [a b c] [x]
+        [a b c]            [a]
+        [d e f]            [d]
 
         
         
