@@ -10,6 +10,7 @@ public class TiredExecutor {
     private final TiredThread[] workers;
     private final PriorityBlockingQueue<TiredThread> idleMinHeap = new PriorityBlockingQueue<>();
     private final AtomicInteger inFlight = new AtomicInteger(0);
+    private final Object completionLock = new Object();
 
     public TiredExecutor(int numThreads) {
         this.workers = new TiredThread[numThreads];
@@ -19,21 +20,26 @@ public class TiredExecutor {
             idleMinHeap.add(workers[i]);
         }
     }
-
+    // Submit a task to be executed by the executor
+    // The task will be assigned to the least fatigued idle worker
     public void submit(Runnable task) {
         try{
             inFlight.incrementAndGet();
             TiredThread worker = idleMinHeap.take();
-            
+            // Wrap the task to ensure the worker is returned to the idle heap after execution
               Runnable wrappedTask = () -> {
                 try{
                     task.run();
                 }finally{
                     inFlight.decrementAndGet();
                     idleMinHeap.add(worker);
-                }
-              };
-              worker.newTask(wrappedTask);
+                    synchronized (completionLock) {
+                        completionLock.notifyAll();
+                    }
+              }
+            };
+
+            worker.newTask(wrappedTask);// Assign the wrapped task to the selected worker
         }catch(InterruptedException e){
             Thread.currentThread().interrupt();
         }
@@ -43,15 +49,38 @@ public class TiredExecutor {
         for(Runnable task : tasks){
             submit(task);
         }
+        synchronized(completionLock){
+        while(inFlight.get() > 0)
+        {
+            try{
+                completionLock.wait();
+            }
+            catch(InterruptedException e){
+                Thread.currentThread().interrupt();
+            }
+        }
+
     }
+}
 
     public void shutdown() throws InterruptedException {
         for(int i=0;i<workers.length;i++){
             workers[i].shutdown();
         }
+        for(TiredThread worker : workers){
+            worker.join();
+        }
     }
 
     public synchronized String getWorkerReport() {
-        
+        StringBuilder report = new StringBuilder();
+        for (TiredThread worker : workers) {
+            report.append("Worker ").append(worker.getWorkerId())
+                  .append(": Time Used = ").append(worker.getTimeUsed() / 1_000_000).append(" ms, ")
+                  .append("Time Idle = ").append(worker.getTimeIdle() / 1_000_000).append(" ms, ")
+                  .append("Fatigue = ").append(String.format("%.4f", worker.getFatigue()))
+                  .append("\n");
+        }
+        return report.toString();
     }
 }
