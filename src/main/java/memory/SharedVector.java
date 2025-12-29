@@ -60,14 +60,13 @@ public class SharedVector {
         if(other == null){
             throw new IllegalArgumentException("Other vector is null");
         }
-        if (this.orientation != other.getOrientation()) {
+       /*  if (this.orientation != other.getOrientation()) {
             throw new IllegalArgumentException("Cannot add vectors with different orientations");
-        }
+        }*/
         if (this.vector.length != other.vector.length) {
              throw new IllegalArgumentException("Vector lengths do not match");
         }
         
-        other.readLock();
         for(int i=0;i<vector.length;i++){
             this.vector[i]+=other.get(i); 
         }

@@ -88,6 +88,9 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
                 try{
                     Runnable task = handoff.take();
 
+                    if (task == POISON_PILL) 
+                        break;
+                    
                     long idleEnd = System.nanoTime();
                     long idleDuration = idleEnd - idleStartTime.get();
                     this.timeIdle.addAndGet(idleDuration);

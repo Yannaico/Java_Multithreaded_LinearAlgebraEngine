@@ -33,7 +33,7 @@ public class LinearAlgebraEngine {
 
         // Repeatedly find and compute resolvable nodes until the root is a matrix
         while(computationRoot.getNodeType() != ComputationNodeType.MATRIX){
-           ComputationNode resolvable =computationRoot.findResolvable();
+           ComputationNode resolvable = computationRoot.findResolvable();
            loadAndCompute(resolvable);
 
         }
@@ -195,9 +195,13 @@ public class LinearAlgebraEngine {
 
         return tasks;
     }
-    }
+    
 
     public String getWorkerReport() {
         return executor.getWorkerReport();
+    }
+    public void shutdown() throws InterruptedException {
+        if(executor != null)
+            executor.shutdown();
     }
 }

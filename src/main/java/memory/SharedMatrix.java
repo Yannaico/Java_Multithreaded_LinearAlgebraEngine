@@ -78,7 +78,7 @@ public class SharedMatrix {
     }
 
     public VectorOrientation getOrientation() {
-        if(this.vectors != null || this.length() == 0)
+        if(this.vectors == null || this.length() == 0)
             throw new IllegalArgumentException();
         return this.vectors[0].getOrientation();
     }
@@ -108,7 +108,7 @@ public class SharedMatrix {
         
          for(int i=0;i<vecs.length;i++)
         {
-            vecs[i].writeLock();
+            vecs[i].writeUnlock();
         }
     }
 }
