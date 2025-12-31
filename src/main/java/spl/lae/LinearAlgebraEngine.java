@@ -60,32 +60,27 @@ public class LinearAlgebraEngine {
             
         // TODO: create compute tasks & submit tasks to executor
         List<Runnable> tasks;
-        try{
-            switch (node.getNodeType()) {
-                case ADD:
-                    tasks = createAddTasks();
-                    break;
-                case MULTIPLY:
-                    tasks = createMultiplyTasks();
-                    break;
-                case NEGATE:
-                    tasks = createNegateTasks();
-                    break;  
-                case TRANSPOSE:
-                    tasks = createTransposeTasks();
-                    break;    
-                default:
-                    throw new IllegalArgumentException("Unsupported operation: " + node.getNodeType());
-                }
+        switch (node.getNodeType()) {
+            case ADD:
+                tasks = createAddTasks();
+                break;
+            case MULTIPLY:
+                tasks = createMultiplyTasks();
+                break;
+            case NEGATE:
+                tasks = createNegateTasks();
+                break;  
+            case TRANSPOSE:
+                tasks = createTransposeTasks();
+                break;    
+            default:
+                throw new IllegalArgumentException("Unsupported operation: " + node.getNodeType());
             }
-            catch(IllegalArgumentException e){
-                throw e;
-            } 
-            // Submit all tasks and wait for completion
-            executor.submitAll(tasks);
-            double[][]result = leftMatrix.readRowMajor();
-            node.resolve(result);
-        }
+        // Submit all tasks and wait for completion
+        executor.submitAll(tasks);
+        double[][]result = leftMatrix.readRowMajor();
+        node.resolve(result);
+    }
 
     public List<Runnable> createAddTasks() {
         if(leftMatrix.length() != rightMatrix.length())
@@ -103,9 +98,6 @@ public class LinearAlgebraEngine {
                 rightRow.readLock();
                 try{
                     leftRow.add(rightRow);
-                }catch(IllegalArgumentException e)
-                {
-                    throw e;
                 }
                 finally{
                     rightRow.readUnlock();
@@ -133,9 +125,6 @@ public class LinearAlgebraEngine {
 
                 try{
                     leftRow.vecMatMul(rightMatrix);
-                }catch(IllegalArgumentException e)
-                {
-                    throw e;
                 }
                 finally{
                     for(int k=rightMatrix.length()-1;k>=0;k--){

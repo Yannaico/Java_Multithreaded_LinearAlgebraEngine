@@ -85,6 +85,7 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
         @Override
         public void run() {
             while(this.alive.get()){
+                long taskStart = System.nanoTime();
                 try{
                     Runnable task = handoff.take();
 
@@ -96,14 +97,14 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
                     this.timeIdle.addAndGet(idleDuration);
 
                     this.busy.set(true);
-                    long taskStart = System.nanoTime();
+                    taskStart = System.nanoTime();
 
-                    try {
-                        task.run();
-                    } catch (Exception e) {
-                        //System.err.println("Worker " + id + " encountered error: " + e.getMessage());
-                    }
-                    finally{
+                    task.run();
+                }catch(InterruptedException e){
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                finally{
                         long taskEnd = System.nanoTime();
                         long workedDuration = taskEnd - taskStart;
                         this.timeUsed.addAndGet(workedDuration);
@@ -111,12 +112,9 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
                         this.busy.set(false);
                         idleStartTime.set(System.nanoTime());
                     }
-                    
-                }catch(InterruptedException e){
-                    Thread.currentThread().interrupt();
-                }
             }
         }
+    
 
     @Override
     public int compareTo(TiredThread o) {

@@ -13,6 +13,9 @@ public class TiredExecutor {
     private final Object completionLock = new Object();
 
     public TiredExecutor(int numThreads) {
+        if(numThreads <= 0){
+            throw new IllegalArgumentException("Number of threads must be positive");
+        }
         this.workers = new TiredThread[numThreads];
         for(int i=0;i<numThreads;i++){
             workers[i] = new TiredThread(i, 0.5 + Math.random());
@@ -23,6 +26,9 @@ public class TiredExecutor {
     // Submit a task to be executed by the executor
     // The task will be assigned to the least fatigued idle worker
     public void submit(Runnable task) {
+        if(task == null){
+            throw new IllegalArgumentException("Task cannot be null");
+        }
         try{
             inFlight.incrementAndGet();
             TiredThread worker = idleMinHeap.take();
@@ -30,6 +36,9 @@ public class TiredExecutor {
               Runnable wrappedTask = () -> {
                 try{
                     task.run();
+                }
+                catch(Exception e){
+                    //throw e;
                 }finally{
                     inFlight.decrementAndGet();
                     idleMinHeap.add(worker);
@@ -42,6 +51,7 @@ public class TiredExecutor {
             worker.newTask(wrappedTask);// Assign the wrapped task to the selected worker
         }catch(InterruptedException e){
             Thread.currentThread().interrupt();
+            throw new RuntimeException("TiredExecutor interrupted while submitting task", e); 
         }
     }
 

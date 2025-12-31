@@ -536,6 +536,9 @@ public class TiredExecutor {
     private final Object completionLock = new Object();
 
     public TiredExecutor(int numThreads) {
+        if(numThreads <= 0){
+            throw new IllegalArgumentException("Number of threads must be positive");
+        }
         this.workers = new TiredThread[numThreads];
         for(int i=0;i<numThreads;i++){
             workers[i] = new TiredThread(i, 0.5 + Math.random());
@@ -546,6 +549,9 @@ public class TiredExecutor {
     // Submit a task to be executed by the executor
     // The task will be assigned to the least fatigued idle worker
     public void submit(Runnable task) {
+        if(task == null){
+            throw new IllegalArgumentException("Task cannot be null");
+        }
         try{
             inFlight.incrementAndGet();
             TiredThread worker = idleMinHeap.take();
@@ -553,6 +559,9 @@ public class TiredExecutor {
               Runnable wrappedTask = () -> {
                 try{
                     task.run();
+                }
+                catch(Exception e){
+                    //throw e;
                 }finally{
                     inFlight.decrementAndGet();
                     idleMinHeap.add(worker);
@@ -565,6 +574,7 @@ public class TiredExecutor {
             worker.newTask(wrappedTask);// Assign the wrapped task to the selected worker
         }catch(InterruptedException e){
             Thread.currentThread().interrupt();
+            throw new RuntimeException("TiredExecutor interrupted while submitting task", e); 
         }
     }
 
@@ -698,6 +708,7 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
         @Override
         public void run() {
             while(this.alive.get()){
+                long taskStart = System.nanoTime();
                 try{
                     Runnable task = handoff.take();
 
@@ -709,14 +720,14 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
                     this.timeIdle.addAndGet(idleDuration);
 
                     this.busy.set(true);
-                    long taskStart = System.nanoTime();
+                    taskStart = System.nanoTime();
 
-                    try {
-                        task.run();
-                    } catch (Exception e) {
-                        //System.err.println("Worker " + id + " encountered error: " + e.getMessage());
-                    }
-                    finally{
+                    task.run();
+                }catch(InterruptedException e){
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                finally{
                         long taskEnd = System.nanoTime();
                         long workedDuration = taskEnd - taskStart;
                         this.timeUsed.addAndGet(workedDuration);
@@ -724,12 +735,9 @@ public class TiredThread extends Thread implements Comparable<TiredThread> {
                         this.busy.set(false);
                         idleStartTime.set(System.nanoTime());
                     }
-                    
-                }catch(InterruptedException e){
-                    Thread.currentThread().interrupt();
-                }
             }
         }
+    
 
     @Override
     public int compareTo(TiredThread o) {
@@ -807,32 +815,27 @@ public class LinearAlgebraEngine {
             
         // TODO: create compute tasks & submit tasks to executor
         List<Runnable> tasks;
-        try{
-            switch (node.getNodeType()) {
-                case ADD:
-                    tasks = createAddTasks();
-                    break;
-                case MULTIPLY:
-                    tasks = createMultiplyTasks();
-                    break;
-                case NEGATE:
-                    tasks = createNegateTasks();
-                    break;  
-                case TRANSPOSE:
-                    tasks = createTransposeTasks();
-                    break;    
-                default:
-                    throw new IllegalArgumentException("Unsupported operation: " + node.getNodeType());
-                }
+        switch (node.getNodeType()) {
+            case ADD:
+                tasks = createAddTasks();
+                break;
+            case MULTIPLY:
+                tasks = createMultiplyTasks();
+                break;
+            case NEGATE:
+                tasks = createNegateTasks();
+                break;  
+            case TRANSPOSE:
+                tasks = createTransposeTasks();
+                break;    
+            default:
+                throw new IllegalArgumentException("Unsupported operation: " + node.getNodeType());
             }
-            catch(IllegalArgumentException e){
-                throw e;
-            } 
-            // Submit all tasks and wait for completion
-            executor.submitAll(tasks);
-            double[][]result = leftMatrix.readRowMajor();
-            node.resolve(result);
-        }
+        // Submit all tasks and wait for completion
+        executor.submitAll(tasks);
+        double[][]result = leftMatrix.readRowMajor();
+        node.resolve(result);
+    }
 
     public List<Runnable> createAddTasks() {
         if(leftMatrix.length() != rightMatrix.length())
@@ -850,9 +853,6 @@ public class LinearAlgebraEngine {
                 rightRow.readLock();
                 try{
                     leftRow.add(rightRow);
-                }catch(IllegalArgumentException e)
-                {
-                    throw e;
                 }
                 finally{
                     rightRow.readUnlock();
@@ -880,9 +880,6 @@ public class LinearAlgebraEngine {
 
                 try{
                     leftRow.vecMatMul(rightMatrix);
-                }catch(IllegalArgumentException e)
-                {
-                    throw e;
                 }
                 finally{
                     for(int k=rightMatrix.length()-1;k>=0;k--){
@@ -1707,6 +1704,1350 @@ public class SharedVectorTest {
         assertEquals(1e-10, small.get(0), 1e-15);
         assertEquals(1e-15, small.get(1), 1e-20);
         assertEquals(1e-20, small.get(2), 1e-25);
+    }
+}
+
+
+
+=== FILE: \src\test\java\scheduling\TiredExecutorTest.java ===
+package scheduling;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Timeout;
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+public class TiredExecutorTest {
+    
+    private TiredExecutor executor;
+    
+    @AfterEach
+    public void tearDown() throws InterruptedException {
+        if (executor != null) {
+            executor.shutdown();
+        }
+    }
+    
+    // ========== VALID CASES ==========
+    
+    @Test
+    @Timeout(5)
+    public void testCreateExecutor_ValidThreadCount() {
+        executor = new TiredExecutor(4);
+        assertNotNull(executor);
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testSubmitSingleTask_ExecutesSuccessfully() throws InterruptedException {
+        executor = new TiredExecutor(2);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        executor.submit(() -> counter.incrementAndGet());
+        
+        // Give time for task to complete
+        Thread.sleep(100);
+        
+        assertEquals(1, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testSubmitMultipleTasks_AllExecute() throws InterruptedException {
+        executor = new TiredExecutor(4);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        for (int i = 0; i < 10; i++) {
+            executor.submit(() -> counter.incrementAndGet());
+        }
+        
+        // Give time for all tasks to complete
+        Thread.sleep(500);
+        
+        assertEquals(10, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testSubmitAll_WaitsForCompletion() {
+        executor = new TiredExecutor(4);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            tasks.add(() -> {
+                counter.incrementAndGet();
+                try {
+                    Thread.sleep(10); // Simulate work
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+        
+        executor.submitAll(tasks);
+        
+        // After submitAll returns, all tasks should be complete
+        assertEquals(20, counter.get());
+    }
+    
+    @Test
+    @Timeout(10)
+    public void testSubmitAll_BlocksUntilAllTasksFinish() {
+        executor = new TiredExecutor(2);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        long startTime = System.currentTimeMillis();
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            tasks.add(() -> {
+                try {
+                    Thread.sleep(200); // Each task takes 200ms
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                counter.incrementAndGet();
+            });
+        }
+        
+        executor.submitAll(tasks);
+        long endTime = System.currentTimeMillis();
+        
+        // With 2 workers and 4 tasks of 200ms each:
+        // Should take at least 400ms (2 batches Ã— 200ms)
+        assertTrue(endTime - startTime >= 400, "Should block until all tasks complete");
+        assertEquals(4, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testParallelExecution_MultipleWorkersWork() {
+        executor = new TiredExecutor(4);
+        
+        AtomicInteger concurrent = new AtomicInteger(0);
+        AtomicInteger maxConcurrent = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            tasks.add(() -> {
+                int current = concurrent.incrementAndGet();
+                
+                // Update max concurrent if this is higher
+                synchronized (maxConcurrent) {
+                    if (current > maxConcurrent.get()) {
+                        maxConcurrent.set(current);
+                    }
+                }
+                
+                try {
+                    Thread.sleep(100); // Hold for a bit
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                
+                concurrent.decrementAndGet();
+            });
+        }
+        
+        executor.submitAll(tasks);
+        
+        // With 4 workers, we should have seen at least 2 tasks running concurrently
+        assertTrue(maxConcurrent.get() >= 2, 
+            "Should have multiple tasks running concurrently, got: " + maxConcurrent.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testShutdown_StopsAllWorkers() throws InterruptedException {
+        executor = new TiredExecutor(4);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        executor.submit(() -> counter.incrementAndGet());
+        
+        Thread.sleep(100); // Let task complete
+        
+        executor.shutdown();
+        
+        // After shutdown, all workers should have stopped
+        assertEquals(1, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testGetWorkerReport_ReturnsStatistics() {
+        executor = new TiredExecutor(4);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            tasks.add(() -> {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+        
+        executor.submitAll(tasks);
+        
+        String report = executor.getWorkerReport();
+        
+        assertNotNull(report);
+        assertTrue(report.contains("Worker"));
+        assertTrue(report.contains("Fatigue"));
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testFairnessDistribution_WorkIsBalanced() {
+        executor = new TiredExecutor(4);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            tasks.add(() -> {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+        
+        executor.submitAll(tasks);
+        
+        String report = executor.getWorkerReport();
+        
+        // All workers should have done some work
+        assertNotNull(report);
+        assertTrue(report.length() > 0);
+    }
+    
+    // ========== INVALID CASES ==========
+    
+    @Test
+    public void testCreateExecutor_ZeroThreads() {
+        assertThrows(Exception.class, () -> {
+            executor = new TiredExecutor(0);
+        });
+    }
+    
+    @Test
+    public void testCreateExecutor_NegativeThreads() {
+        assertThrows(Exception.class, () -> {
+            executor = new TiredExecutor(-1);
+        });
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testSubmit_NullTask() {
+        executor = new TiredExecutor(2);
+        
+        assertThrows(Exception.class, () -> {
+            executor.submit(null);
+        });
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testSubmitAll_NullTaskList() {
+        executor = new TiredExecutor(2);
+        
+        assertThrows(Exception.class, () -> {
+            executor.submitAll(null);
+        });
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testSubmitAll_EmptyTaskList() {
+        executor = new TiredExecutor(2);
+        
+        List<Runnable> emptyList = new ArrayList<>();
+        
+        // Should complete immediately without error
+        assertDoesNotThrow(() -> executor.submitAll(emptyList));
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testTaskThrowsException_DoesNotCrashWorker() {
+        executor = new TiredExecutor(2);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        
+        // Task that throws exception
+        tasks.add(() -> {
+            throw new RuntimeException("Intentional exception");
+        });
+        
+        // Normal task
+        tasks.add(() -> counter.incrementAndGet());
+        
+        // Should not throw exception to main thread
+        assertDoesNotThrow(() -> executor.submitAll(tasks));
+        
+        // The normal task should still have executed
+        assertEquals(1, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testMultipleTasksThrowExceptions_ExecutorContinues() {
+        executor = new TiredExecutor(2);
+        
+        AtomicInteger successCount = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            final int index = i;
+            if (index % 2 == 0) {
+                // Even indices throw exceptions
+                tasks.add(() -> {
+                    throw new RuntimeException("Exception from task " + index);
+                });
+            } else {
+                // Odd indices succeed
+                tasks.add(() -> successCount.incrementAndGet());
+            }
+        }
+        
+        assertDoesNotThrow(() -> executor.submitAll(tasks));
+        
+        // Should have 5 successful tasks
+        assertEquals(5, successCount.get());
+    }
+    
+    // ========== EDGE CASES ==========
+    
+    @Test
+    @Timeout(5)
+    public void testSingleWorkerThread_ExecutesSequentially() {
+        executor = new TiredExecutor(1);
+        
+        List<Integer> executionOrder = new ArrayList<>();
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            final int taskId = i;
+            tasks.add(() -> {
+                synchronized (executionOrder) {
+                    executionOrder.add(taskId);
+                }
+            });
+        }
+        
+        executor.submitAll(tasks);
+        
+        // All tasks should complete
+        assertEquals(5, executionOrder.size());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testManyWorkers_100Threads() {
+        executor = new TiredExecutor(100);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            tasks.add(() -> counter.incrementAndGet());
+        }
+        
+        executor.submitAll(tasks);
+        
+        assertEquals(100, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testVeryQuickTasks_ExecuteCorrectly() {
+        executor = new TiredExecutor(4);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 1000; i++) {
+            tasks.add(() -> counter.incrementAndGet());
+        }
+        
+        executor.submitAll(tasks);
+        
+        assertEquals(1000, counter.get());
+    }
+    
+    @Test
+    @Timeout(15)
+    public void testVerySlowTasks_CompleteEventually() {
+        executor = new TiredExecutor(2);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            tasks.add(() -> {
+                try {
+                    Thread.sleep(1000); // 1 second per task
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                counter.incrementAndGet();
+            });
+        }
+        
+        long start = System.currentTimeMillis();
+        executor.submitAll(tasks);
+        long duration = System.currentTimeMillis() - start;
+        
+        // With 2 workers and 4 tasks of 1s each, should take ~2s
+        assertTrue(duration >= 2000, "Should take at least 2 seconds");
+        assertEquals(4, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testEmptyTask_DoesNothing() {
+        executor = new TiredExecutor(2);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        tasks.add(() -> {}); // Empty task
+        
+        assertDoesNotThrow(() -> executor.submitAll(tasks));
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testTaskModifiesSharedState_ThreadSafe() {
+        executor = new TiredExecutor(4);
+        
+        AtomicInteger sharedCounter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            tasks.add(() -> {
+                for (int j = 0; j < 100; j++) {
+                    sharedCounter.incrementAndGet();
+                }
+            });
+        }
+        
+        executor.submitAll(tasks);
+        
+        // Should be exactly 10000 with no race conditions
+        assertEquals(10000, sharedCounter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testConsecutiveSubmitAll_BothComplete() {
+        executor = new TiredExecutor(2);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> batch1 = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            batch1.add(() -> counter.incrementAndGet());
+        }
+        
+        List<Runnable> batch2 = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            batch2.add(() -> counter.incrementAndGet());
+        }
+        
+        executor.submitAll(batch1);
+        assertEquals(5, counter.get(), "First batch should complete");
+        
+        executor.submitAll(batch2);
+        assertEquals(10, counter.get(), "Second batch should complete");
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testSingleTask_1x1Matrix() {
+        executor = new TiredExecutor(4);
+        
+        AtomicInteger result = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        tasks.add(() -> result.set(42));
+        
+        executor.submitAll(tasks);
+        
+        assertEquals(42, result.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testTasksWithDifferentDurations_AllComplete() {
+        executor = new TiredExecutor(3);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        
+        // Fast task
+        tasks.add(() -> counter.incrementAndGet());
+        
+        // Medium task
+        tasks.add(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            counter.incrementAndGet();
+        });
+        
+        // Slow task
+        tasks.add(() -> {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            counter.incrementAndGet();
+        });
+        
+        executor.submitAll(tasks);
+        
+        assertEquals(3, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testMoreTasksThanWorkers_AllComplete() {
+        executor = new TiredExecutor(2);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            tasks.add(() -> counter.incrementAndGet());
+        }
+        
+        executor.submitAll(tasks);
+        
+        assertEquals(10, counter.get());
+    }
+    
+    @Test
+    @Timeout(5)
+    public void testFewerTasksThanWorkers_AllComplete() {
+        executor = new TiredExecutor(10);
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        
+        List<Runnable> tasks = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            tasks.add(() -> counter.incrementAndGet());
+        }
+        
+        executor.submitAll(tasks);
+        
+        assertEquals(3, counter.get());
+    }
+    
+    @Test
+    @Timeout(10)
+    public void testShutdownAfterMultipleBatches_CleansUpProperly() throws InterruptedException {
+        executor = new TiredExecutor(4);
+        
+        for (int batch = 0; batch < 5; batch++) {
+            List<Runnable> tasks = new ArrayList<>();
+            for (int i = 0; i < 10; i++) {
+                tasks.add(() -> {
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            }
+            executor.submitAll(tasks);
+        }
+        
+        // Should shutdown cleanly
+        assertDoesNotThrow(() -> executor.shutdown());
+    }
+}
+
+
+
+=== FILE: \src\test\java\scheduling\TiredThreadTest.java ===
+package scheduling;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class TiredThreadTest {
+    
+    private TiredThread thread;
+    
+    @AfterEach
+    public void tearDown() throws InterruptedException {
+        if (thread != null && thread.isAlive()) {
+            thread.shutdown();
+            thread.join(1000);
+        }
+    }
+    
+    // ========== VALID CASES ==========
+    
+    @Test
+    public void testConstructor_ValidParameters() {
+        thread = new TiredThread(0, 1.0);
+        assertNotNull(thread);
+        assertEquals(0, thread.getWorkerId());
+        assertEquals(0.0, thread.getFatigue(), 0.001);
+    }
+    
+    @Test
+    public void testGetWorkerId_ReturnsCorrectId() {
+        thread = new TiredThread(5, 1.0);
+        assertEquals(5, thread.getWorkerId());
+    }
+    
+    @Test
+    public void testGetFatigue_InitiallyZero() {
+        thread = new TiredThread(0, 1.0);
+        assertEquals(0.0, thread.getFatigue(), 0.001);
+    }
+    
+    @Test
+    public void testIsBusy_InitiallyFalse() {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        assertFalse(thread.isBusy());
+    }
+    
+    @Test
+    public void testGetTimeUsed_InitiallyZero() {
+        thread = new TiredThread(0, 1.0);
+        assertEquals(0L, thread.getTimeUsed());
+    }
+    
+    @Test
+    public void testGetTimeIdle_InitiallyZero() {
+        thread = new TiredThread(0, 1.0);
+        assertEquals(0L, thread.getTimeIdle());
+    }
+    
+    @Test
+    public void testNewTask_ExecutesTask() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        AtomicBoolean executed = new AtomicBoolean(false);
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        Runnable task = () -> {
+            executed.set(true);
+            latch.countDown();
+        };
+        
+        thread.newTask(task);
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        assertTrue(executed.get());
+    }
+    
+    @Test
+    public void testNewTask_UpdatesTimeUsed() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        Runnable task = () -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            latch.countDown();
+        };
+        
+        thread.newTask(task);
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        
+        Thread.sleep(100);
+        assertTrue(thread.getTimeUsed() > 0, "TimeUsed should be greater than 0");
+    }
+    
+    @Test
+    public void testNewTask_UpdatesFatigue() throws InterruptedException {
+        thread = new TiredThread(0, 1.5);
+        thread.start();
+        
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        Runnable task = () -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            latch.countDown();
+        };
+        
+        thread.newTask(task);
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        
+        Thread.sleep(100);
+        assertTrue(thread.getFatigue() > 0, "Fatigue should increase after task execution");
+    }
+    
+    @Test
+    public void testNewTask_SetsBusyDuringExecution() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch endLatch = new CountDownLatch(1);
+        AtomicBoolean wasBusy = new AtomicBoolean(false);
+        
+        Runnable task = () -> {
+            startLatch.countDown();
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            endLatch.countDown();
+        };
+        
+        thread.newTask(task);
+        assertTrue(startLatch.await(1, TimeUnit.SECONDS));
+        
+        Thread.sleep(20);
+        wasBusy.set(thread.isBusy());
+        
+        assertTrue(endLatch.await(2, TimeUnit.SECONDS));
+        assertTrue(wasBusy.get(), "Thread should be busy during task execution");
+    }
+    
+    @Test
+    public void testNewTask_NotBusyAfterCompletion() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        Runnable task = () -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            latch.countDown();
+        };
+        
+        thread.newTask(task);
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        
+        Thread.sleep(100);
+        assertFalse(thread.isBusy(), "Thread should not be busy after task completion");
+    }
+    
+    @Test
+    public void testShutdown_StopsThread() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        assertTrue(thread.isAlive());
+        thread.shutdown();
+        thread.join(1000);
+        assertFalse(thread.isAlive());
+    }
+    
+    @Test
+    public void testCompareTo_LowerFatigueFirst() throws InterruptedException {
+        TiredThread thread1 = new TiredThread(0, 1.0);
+        TiredThread thread2 = new TiredThread(1, 1.0);
+        
+        thread1.start();
+        thread2.start();
+        
+        CountDownLatch latch1 = new CountDownLatch(1);
+        CountDownLatch latch2 = new CountDownLatch(1);
+        
+        thread1.newTask(() -> {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            latch1.countDown();
+        });
+        
+        thread2.newTask(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            latch2.countDown();
+        });
+        
+        assertTrue(latch1.await(2, TimeUnit.SECONDS));
+        assertTrue(latch2.await(2, TimeUnit.SECONDS));
+        
+        Thread.sleep(100);
+        
+        assertTrue(thread1.compareTo(thread2) > 0, "Thread1 should have higher fatigue");
+        
+        thread1.shutdown();
+        thread2.shutdown();
+        thread1.join(1000);
+        thread2.join(1000);
+    }
+    
+    @Test
+    public void testCompareTo_EqualFatigue() {
+        TiredThread thread1 = new TiredThread(0, 1.0);
+        TiredThread thread2 = new TiredThread(1, 1.0);
+        
+        assertEquals(0, thread1.compareTo(thread2));
+    }
+    
+    // ========== INVALID CASES ==========
+    
+    @Test
+    public void testNewTask_WhenNotStarted_ThrowsException() {
+        thread = new TiredThread(0, 1.0);
+        
+        Runnable task = () -> {};
+        
+        assertThrows(IllegalStateException.class, () -> {
+            thread.newTask(task);
+            Thread.sleep(100);
+            thread.newTask(task);
+        });
+    }
+    
+    @Test
+    public void testNewTask_AfterShutdown_ThrowsException() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        thread.shutdown();
+        thread.join(1000);
+        
+        Runnable task = () -> {};
+        
+        assertThrows(IllegalStateException.class, () -> thread.newTask(task));
+    }
+    
+    @Test
+    public void testNewTask_WhileBusy_ThrowsException() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch endLatch = new CountDownLatch(1);
+        
+        Runnable longTask = () -> {
+            startLatch.countDown();
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            endLatch.countDown();
+        };
+        
+        thread.newTask(longTask);
+        assertTrue(startLatch.await(1, TimeUnit.SECONDS));
+        
+        Runnable secondTask = () -> {};
+        assertThrows(IllegalStateException.class, () -> thread.newTask(secondTask));
+        
+        assertTrue(endLatch.await(2, TimeUnit.SECONDS));
+    }
+    
+    // ========== EDGE CASES ==========
+    
+    @Test
+    public void testMultipleTasks_Sequential() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        AtomicInteger counter = new AtomicInteger(0);
+        CountDownLatch latch1 = new CountDownLatch(1);
+        CountDownLatch latch2 = new CountDownLatch(1);
+        CountDownLatch latch3 = new CountDownLatch(1);
+        
+        thread.newTask(() -> {
+            counter.incrementAndGet();
+            latch1.countDown();
+        });
+        
+        assertTrue(latch1.await(1, TimeUnit.SECONDS));
+        
+        thread.newTask(() -> {
+            counter.incrementAndGet();
+            latch2.countDown();
+        });
+        
+        assertTrue(latch2.await(1, TimeUnit.SECONDS));
+        
+        thread.newTask(() -> {
+            counter.incrementAndGet();
+            latch3.countDown();
+        });
+        
+        assertTrue(latch3.await(1, TimeUnit.SECONDS));
+        
+        assertEquals(3, counter.get());
+    }
+    
+    @Test
+    public void testFatigueFactor_LowerValue() throws InterruptedException {
+        thread = new TiredThread(0, 0.5);
+        thread.start();
+        
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        thread.newTask(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            latch.countDown();
+        });
+        
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        Thread.sleep(100);
+        
+        double fatigue = thread.getFatigue();
+        assertTrue(fatigue > 0, "Fatigue should be positive");
+        assertTrue(fatigue < thread.getTimeUsed(), "Fatigue should be less than time used due to low factor");
+    }
+    
+    @Test
+    public void testFatigueFactor_HigherValue() throws InterruptedException {
+        thread = new TiredThread(0, 1.5);
+        thread.start();
+        
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        thread.newTask(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            latch.countDown();
+        });
+        
+        assertTrue(latch.await(2, TimeUnit.SECONDS));
+        Thread.sleep(100);
+        
+        double fatigue = thread.getFatigue();
+        assertTrue(fatigue > 0, "Fatigue should be positive");
+        assertTrue(fatigue > thread.getTimeUsed(), "Fatigue should be greater than time used due to high factor");
+    }
+    
+    @Test
+    public void testTaskWithException_ContinuesRunning() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        CountDownLatch latch1 = new CountDownLatch(1);
+        CountDownLatch latch2 = new CountDownLatch(1);
+        
+        thread.newTask(() -> {
+            latch1.countDown();
+            throw new RuntimeException("Test exception");
+        });
+        
+        assertTrue(latch1.await(1, TimeUnit.SECONDS));
+        Thread.sleep(100);
+        
+        thread.newTask(() -> {
+            latch2.countDown();
+        });
+        
+        assertTrue(latch2.await(1, TimeUnit.SECONDS), "Thread should continue after exception");
+    }
+    
+    @Test
+    public void testTimeIdle_IncreasesWhenIdle() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        Runnable task = () ->{
+
+            try{
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+        };
+
+        thread.newTask(task);
+        Thread.sleep(2000); // Wait to ensure thread goes idle
+        
+        long idleTime = thread.getTimeIdle();
+        assertTrue(idleTime > 0, "Idle time should increase when thread is waiting");
+    }
+    
+    @Test
+    public void testZeroLengthTask_ExecutesQuickly() throws InterruptedException {
+        thread = new TiredThread(0, 1.0);
+        thread.start();
+        
+        AtomicBoolean executed = new AtomicBoolean(false);
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        thread.newTask(() -> {
+            executed.set(true);
+            latch.countDown();
+        });
+        
+        assertTrue(latch.await(1, TimeUnit.SECONDS));
+        assertTrue(executed.get());
+        assertTrue(thread.getTimeUsed() >= 0);
+    }
+}
+
+
+
+=== FILE: \src\test\java\spl\lae\LinearAlgebraEngineTest.java ===
+package spl.lae;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import parser.ComputationNode;
+import parser.ComputationNodeType;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+public class LinearAlgebraEngineTest {
+
+    private LinearAlgebraEngine engine;
+    // Default thread count for tests
+    private static final int THREAD_COUNT = 4;
+
+    @BeforeEach
+    public void setUp() {
+        engine = new LinearAlgebraEngine(THREAD_COUNT);
+    }
+
+    @AfterEach
+    public void tearDown() throws InterruptedException {
+        if (engine != null) {
+            engine.shutdown();
+        }
+    }
+
+    // ========== HELPER METHODS ==========
+
+    /**
+     * Creates a leaf node containing a matrix.
+     */
+    private ComputationNode createMatrixNode(double[][] data) {
+        return new ComputationNode(data);
+    }
+
+    /**
+     * Creates an operation node.
+     */
+    private ComputationNode createOpNode(String op, ComputationNode... children) {
+        return new ComputationNode(op, Arrays.asList(children));
+    }
+
+    // ========== VALID CASES ==========
+
+    @Test
+    @Timeout(5)
+    public void testSimpleAddition_2x2() {
+        double[][] dataA = {{1, 2}, {3, 4}};
+        double[][] dataB = {{5, 6}, {7, 8}};
+        
+        ComputationNode nodeA = createMatrixNode(dataA);
+        ComputationNode nodeB = createMatrixNode(dataB);
+        ComputationNode root = createOpNode("+", nodeA, nodeB);
+
+        ComputationNode resultNode = engine.run(root);
+        double[][] result = resultNode.getMatrix();
+
+        // Expected: {{6, 8}, {10, 12}}
+        assertEquals(6.0, result[0][0], 0.001);
+        assertEquals(8.0, result[0][1], 0.001);
+        assertEquals(10.0, result[1][0], 0.001);
+        assertEquals(12.0, result[1][1], 0.001);
+    }
+
+    @Test
+    @Timeout(5)
+    public void testSimpleMultiplication_RowByCol() {
+        // A is 2x3, B is 3x2 -> Result is 2x2
+        double[][] dataA = {
+            {1, 2, 3},
+            {4, 5, 6}
+        };
+        double[][] dataB = {
+            {7, 8},
+            {9, 1},
+            {2, 3}
+        };
+
+        ComputationNode nodeA = createMatrixNode(dataA);
+        ComputationNode nodeB = createMatrixNode(dataB);
+        ComputationNode root = createOpNode("*", nodeA, nodeB);
+
+        ComputationNode resultNode = engine.run(root);
+        double[][] result = resultNode.getMatrix();
+
+        // Math check:
+        // C[0][0] = 1*7 + 2*9 + 3*2 = 7 + 18 + 6 = 31
+        // C[0][1] = 1*8 + 2*1 + 3*3 = 8 + 2 + 9 = 19
+        // C[1][0] = 4*7 + 5*9 + 6*2 = 28 + 45 + 12 = 85
+        // C[1][1] = 4*8 + 5*1 + 6*3 = 32 + 5 + 18 = 55
+
+        assertEquals(2, result.length);
+        assertEquals(2, result[0].length);
+        assertEquals(31.0, result[0][0], 0.001);
+        assertEquals(19.0, result[0][1], 0.001);
+        assertEquals(85.0, result[1][0], 0.001);
+        assertEquals(55.0, result[1][1], 0.001);
+    }
+
+    @Test
+    @Timeout(5)
+    public void testNegateOperation() {
+        double[][] data = {{1, -2}, {0, 5}};
+        ComputationNode root = createOpNode("-", createMatrixNode(data));
+
+        ComputationNode resultNode = engine.run(root);
+        double[][] result = resultNode.getMatrix();
+
+        assertEquals(-1.0, result[0][0], 0.001);
+        assertEquals(2.0, result[0][1], 0.001);
+        assertEquals(0.0, result[1][0], 0.001);
+        assertEquals(-5.0, result[1][1], 0.001);
+    }
+
+    @Test
+    @Timeout(5)
+    public void testTransposeOperation() {
+        double[][] data = {
+            {1, 2, 3},
+            {4, 5, 6}
+        }; // 2x3
+        ComputationNode root = createOpNode("T", createMatrixNode(data));
+
+        ComputationNode resultNode = engine.run(root);
+        double[][] result = resultNode.getMatrix();
+
+        // Expect 3x2
+        assertEquals(3, result.length);
+        assertEquals(2, result[0].length);
+        
+        assertEquals(1.0, result[0][0], 0.001);
+        assertEquals(4.0, result[0][1], 0.001);
+        assertEquals(3.0, result[2][0], 0.001);
+        assertEquals(6.0, result[2][1], 0.001);
+    }
+
+    
+    @Test
+    @Timeout(5)
+    public void testMixedOperations_Integration() {
+        // Calculation: (A + B)^T
+        double[][] A = {{1, 2}};
+        double[][] B = {{3, 4}};
+        
+        ComputationNode sumNode = createOpNode("+", createMatrixNode(A), createMatrixNode(B));
+        ComputationNode root = createOpNode("T", sumNode);
+
+        ComputationNode resultNode = engine.run(root);
+        double[][] result = resultNode.getMatrix();
+
+        // A+B = {{4, 6}} (1x2)
+        // (A+B)^T = {{4}, {6}} (2x1)
+        assertEquals(2, result.length);
+        assertEquals(1, result[0].length);
+        assertEquals(4.0, result[0][0], 0.001);
+        assertEquals(6.0, result[1][0], 0.001);
+    }
+
+    @Test
+    @Timeout(5)
+    public void testReuseEngine_MultipleRuns() {
+        // Ensure the engine is not "one-shot" and clears internal state properly
+        double[][] data = {{1}};
+        
+        // Run 1: Addition
+        ComputationNode root1 = createOpNode("+", createMatrixNode(data), createMatrixNode(data));
+        engine.run(root1); // 1 + 1 = 2
+        assertEquals(2.0, root1.getMatrix()[0][0], 0.001);
+
+        // Run 2: Multiplication
+        ComputationNode root2 = createOpNode("*", createMatrixNode(data), createMatrixNode(data));
+        engine.run(root2); // 1 * 1 = 1
+        assertEquals(1.0, root2.getMatrix()[0][0], 0.001);
+    }
+
+    // ========== INVALID CASES ==========
+
+    @Test
+    public void testRun_NullRoot_ThrowsException() {
+        assertThrows(IllegalArgumentException.class, () -> engine.run(null));
+    }
+
+    @Test
+    public void testAddition_DimensionMismatch() {
+        double[][] A = {{1, 2}}; // 1x2
+        double[][] B = {{1, 2, 3}}; // 1x3
+        
+        ComputationNode root = createOpNode("+", createMatrixNode(A), createMatrixNode(B));
+        
+        // The implementation calls createAddTasks which checks dimensions
+        assertThrows(IllegalArgumentException.class, () -> engine.run(root));
+    }
+
+    @Test
+    public void testMultiplication_DimensionMismatch() {
+        double[][] A = {{1, 2}}; // 1x2
+        double[][] B = {{1, 2}}; // 1x2 (Rows of B != Cols of A)
+        
+        ComputationNode root = createOpNode("*", createMatrixNode(A), createMatrixNode(B));
+        
+        // SharedVector.vecMatMul checks dimensions
+        assertThrows(IllegalArgumentException.class, () -> engine.run(root));
+    }
+
+    @Test
+    public void testUnaryOperator_WithTwoOperands_ThrowsException() {
+        double[][] A = {{1}};
+        // Transpose should have 1 child, giving 2
+        ComputationNode root = createOpNode("T", createMatrixNode(A), createMatrixNode(A));
+        
+        assertThrows(IllegalArgumentException.class, () -> engine.run(root));
+    }
+
+    @Test
+    public void testBinaryOperator_WithOneOperand_ThrowsException() {
+        double[][] A = {{1}};
+        // Add should have >= 2 children
+        ComputationNode root = new ComputationNode(ComputationNodeType.ADD, Arrays.asList(createMatrixNode(A)));
+        
+        assertThrows(IllegalArgumentException.class, () -> engine.run(root));
+    }
+
+    // ========== EDGE CASES ==========
+
+    @Test
+    @Timeout(5)
+    public void testSingleElementMatrix() {
+        // 1x1 Matrix operations
+        double[][] A = {{10.0}};
+        double[][] B = {{2.0}};
+        
+        ComputationNode root = createOpNode("*", createMatrixNode(A), createMatrixNode(B));
+        ComputationNode result = engine.run(root);
+        
+        assertEquals(20.0, result.getMatrix()[0][0], 0.001);
+    }
+
+    @Test
+    @Timeout(5)
+    public void testIdentityMatrixMultiplication() {
+        double[][] A = {{1, 2}, {3, 4}};
+        double[][] I = {{1, 0}, {0, 1}};
+        
+        ComputationNode root = createOpNode("*", createMatrixNode(A), createMatrixNode(I));
+        ComputationNode result = engine.run(root);
+        
+        double[][] res = result.getMatrix();
+        assertArrayEquals(A[0], res[0], 0.001);
+        assertArrayEquals(A[1], res[1], 0.001);
+    }
+
+    @Test
+    @Timeout(5)
+    public void testZeroMatrixAddition() {
+        double[][] A = {{5, 5}, {5, 5}};
+        double[][] Z = {{0, 0}, {0, 0}};
+        
+        ComputationNode root = createOpNode("+", createMatrixNode(A), createMatrixNode(Z));
+        ComputationNode result = engine.run(root);
+        
+        double[][] res = result.getMatrix();
+        assertArrayEquals(A[0], res[0], 0.001);
+        assertArrayEquals(A[1], res[1], 0.001);
+    }
+
+    @Test
+    @Timeout(5)
+    public void testRootIsAlreadyMatrix() {
+        // Case where input JSON is just a matrix, no operators
+        double[][] A = {{1, 2}};
+        ComputationNode root = createMatrixNode(A);
+        
+        ComputationNode result = engine.run(root);
+        
+        // Should return immediately without using executor
+        assertSame(root, result);
+        assertArrayEquals(A[0], result.getMatrix()[0], 0.001);
+    }
+
+    // ========== CONCURRENCY / STRESS ==========
+
+    @Test
+    @Timeout(10)
+    public void testLargeComputation() {
+        // Not "Big Data" large, but enough to ensure threads actually context switch
+        int size = 50;
+        double[][] A = new double[size][size];
+        double[][] B = new double[size][size];
+        
+        for(int i=0; i<size; i++) {
+            for(int j=0; j<size; j++) {
+                A[i][j] = 1.0;
+                B[i][j] = 1.0;
+            }
+        }
+        
+        ComputationNode root = createOpNode("+", createMatrixNode(A), createMatrixNode(B));
+        ComputationNode result = engine.run(root);
+        
+        assertEquals(2.0, result.getMatrix()[0][0], 0.001);
+        assertEquals(2.0, result.getMatrix()[size-1][size-1], 0.001);
+    }
+
+    @Test
+    public void testConstructor_ZeroThreads_ThrowsException() {
+        // TiredExecutor inside LAE throws IllegalArgumentException for <= 0 threads
+        assertThrows(IllegalArgumentException.class, () -> new LinearAlgebraEngine(0));
     }
 }
 
